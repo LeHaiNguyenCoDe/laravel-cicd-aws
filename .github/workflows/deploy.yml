@@ -1,8 +1,8 @@
-name: 🚀 Laravel CI/CD to AWS
+name: Laravel CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, production ]
   pull_request:
     branches: [ main, master ]
 
@@ -11,13 +11,12 @@ env:
   ECR_REPOSITORY: laravel-app
   ECS_SERVICE: laravel-service
   ECS_CLUSTER: laravel-cluster
-  ECS_TASK_DEFINITION: laravel-task
 
 jobs:
   test:
-    name: 🧪 Run Tests
+    name: Run Tests
     runs-on: ubuntu-latest
-    
+
     services:
       mysql:
         image: mysql:8.0
@@ -29,51 +28,42 @@ jobs:
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 🐘 Setup PHP
+    - name: Setup PHP
       uses: shivammathur/setup-php@v2
       with:
         php-version: '8.2'
         extensions: mbstring, xml, ctype, iconv, intl, pdo_sqlite, pdo_mysql, zip
         coverage: xdebug
 
-    - name: 📦 Cache Composer packages
-      id: composer-cache
-      uses: actions/cache@v3
-      with:
-        path: vendor
-        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-php-
+    - name: Copy environment file
+      run: cp .env.example .env
 
-    - name: 🔧 Install dependencies
+    - name: Install Composer dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: 📋 Copy environment file
-      run: php -r "file_exists('.env') || copy('.env.example', '.env');"
-
-    - name: 🔑 Generate app key
+    - name: Generate application key
       run: php artisan key:generate
 
-    - name: 🗄️ Set up database
-      run: |
-        php artisan config:clear
-        php artisan migrate --force
-      env:
-        DB_CONNECTION: mysql
-        DB_HOST: 127.0.0.1
-        DB_PORT: 3306
-        DB_DATABASE: laravel_test
-        DB_USERNAME: root
-        DB_PASSWORD: password
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
 
-    - name: 🧪 Execute tests
+    - name: Install NPM dependencies
+      run: npm install
+
+    - name: Build assets
+      run: npm run build
+
+    - name: Execute tests
       run: php artisan test
 
   build-and-deploy:
-    name: 🚀 Build and Deploy
+    name: Build and Deploy
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/production'
@@ -91,25 +81,25 @@ jobs:
         options: --name localstack --privileged -v /var/run/docker.sock:/var/run/docker.sock
 
     steps:
-    - name: 📥 Checkout code
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: � Detect deployment environment
+    - name: Detect deployment environment
       id: detect-env
       run: |
         if [[ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" && -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]]; then
-          echo "🚀 AWS credentials detected - deploying to PRODUCTION"
+          echo "AWS credentials detected - deploying to PRODUCTION"
           echo "deployment_mode=production" >> $GITHUB_OUTPUT
           echo "aws_endpoint=" >> $GITHUB_OUTPUT
           echo "environment_name=Production AWS" >> $GITHUB_OUTPUT
         else
-          echo "🧪 No AWS credentials - using LocalStack DEMO"
+          echo "No AWS credentials - using LocalStack DEMO"
           echo "deployment_mode=demo" >> $GITHUB_OUTPUT
           echo "aws_endpoint=http://localhost:4566" >> $GITHUB_OUTPUT
           echo "environment_name=LocalStack Demo" >> $GITHUB_OUTPUT
         fi
 
-    - name: 🔐 Configure AWS credentials
+    - name: Configure AWS credentials
       if: steps.detect-env.outputs.deployment_mode == 'production'
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -117,7 +107,7 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: �🔐 Configure LocalStack credentials
+    - name: Configure LocalStack credentials
       if: steps.detect-env.outputs.deployment_mode == 'demo'
       run: |
         echo "Setting up LocalStack credentials..."
@@ -125,80 +115,80 @@ jobs:
         echo "AWS_SECRET_ACCESS_KEY=h4vZw/IR9WBBRjw3rqAFUZaV3ciEplFIVz4axlqi" >> $GITHUB_ENV
         echo "AWS_DEFAULT_REGION=us-east-1" >> $GITHUB_ENV
 
-    - name: 🔄 Wait for LocalStack to be ready
+    - name: Wait for LocalStack to be ready
       if: steps.detect-env.outputs.deployment_mode == 'demo'
       run: |
         echo "Waiting for LocalStack to start..."
         timeout 60 bash -c 'until curl -s http://localhost:4566/_localstack/health; do sleep 2; done'
         echo "LocalStack is ready!"
 
-    - name: 🏗️ Build Docker image
+    - name: Build Docker image
       id: build-image
       env:
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        echo "🏗️ Building Docker image for ${{ steps.detect-env.outputs.environment_name }}..."
+        echo "Building Docker image for ${{ steps.detect-env.outputs.environment_name }}..."
         docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
         docker build -t $ECR_REPOSITORY:latest .
-        echo "✅ Docker image built successfully!"
+        echo "Docker image built successfully!"
         echo "image=$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-    - name: 🐳 Create ECR repository
+    - name: Create ECR repository
       run: |
         ENDPOINT_FLAG=""
         if [[ "${{ steps.detect-env.outputs.deployment_mode }}" == "demo" ]]; then
           ENDPOINT_FLAG="--endpoint-url=http://localhost:4566"
-          echo "🧪 Creating ECR repository in LocalStack..."
+          echo "Creating ECR repository in LocalStack..."
         else
-          echo "🚀 Creating ECR repository in AWS..."
+          echo "Creating ECR repository in AWS..."
         fi
-
+        
         aws $ENDPOINT_FLAG ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION || echo "Repository may already exist"
-        echo "✅ ECR repository created/verified!"
+        echo "ECR repository created/verified!"
 
-    - name: 🐳 Login to ECR and push image
+    - name: Login to ECR and push image
       if: steps.detect-env.outputs.deployment_mode == 'production'
       id: login-ecr
       run: |
-        echo "🔐 Logging into AWS ECR..."
+        echo "Logging into AWS ECR..."
         aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
-
-        echo "📤 Pushing image to AWS ECR..."
+        
+        echo "Pushing image to AWS ECR..."
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         ECR_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY"
-
+        
         docker tag $ECR_REPOSITORY:${{ github.sha }} $ECR_URI:${{ github.sha }}
         docker tag $ECR_REPOSITORY:latest $ECR_URI:latest
-
+        
         docker push $ECR_URI:${{ github.sha }}
         docker push $ECR_URI:latest
-
-        echo "✅ Image pushed to AWS ECR!"
+        
+        echo "Image pushed to AWS ECR!"
         echo "ecr_uri=$ECR_URI:${{ github.sha }}" >> $GITHUB_OUTPUT
 
-    - name: 📤 Simulate ECR push (LocalStack Demo)
+    - name: Simulate ECR push (LocalStack Demo)
       if: steps.detect-env.outputs.deployment_mode == 'demo'
       run: |
-        echo "🧪 Simulating ECR push to LocalStack..."
-        echo "📋 In production, this would push to real AWS ECR"
-        echo "🏷️ Image: $ECR_REPOSITORY:${{ github.sha }}"
-        echo "📦 Registry: LocalStack ECR simulation"
-        echo "✅ Push simulation completed!"
+        echo "Simulating ECR push to LocalStack..."
+        echo "In production, this would push to real AWS ECR"
+        echo "Image: $ECR_REPOSITORY:${{ github.sha }}"
+        echo "Registry: LocalStack ECR simulation"
+        echo "Push simulation completed!"
 
-    - name: 🏗️ Create ECS cluster
+    - name: Create ECS cluster
       run: |
         ENDPOINT_FLAG=""
         if [[ "${{ steps.detect-env.outputs.deployment_mode }}" == "demo" ]]; then
           ENDPOINT_FLAG="--endpoint-url=http://localhost:4566"
-          echo "🧪 Creating ECS cluster in LocalStack..."
+          echo "Creating ECS cluster in LocalStack..."
         else
-          echo "🚀 Creating ECS cluster in AWS..."
+          echo "Creating ECS cluster in AWS..."
         fi
-
+        
         aws $ENDPOINT_FLAG ecs create-cluster --cluster-name $ECS_CLUSTER --region $AWS_REGION || echo "Cluster may already exist"
-        echo "✅ ECS cluster created/verified!"
+        echo "ECS cluster created/verified!"
 
-    - name: � Update ECS task definition (Production)
+    - name: Update ECS task definition (Production)
       if: steps.detect-env.outputs.deployment_mode == 'production'
       id: task-def
       uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -207,7 +197,7 @@ jobs:
         container-name: laravel-app
         image: ${{ steps.login-ecr.outputs.ecr_uri }}
 
-    - name: �🚀 Deploy to ECS (Production)
+    - name: Deploy to ECS (Production)
       if: steps.detect-env.outputs.deployment_mode == 'production'
       uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
@@ -216,61 +206,61 @@ jobs:
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
 
-    - name: 🧪 Simulate ECS deployment (LocalStack Demo)
+    - name: Simulate ECS deployment (LocalStack Demo)
       if: steps.detect-env.outputs.deployment_mode == 'demo'
       run: |
-        echo "🧪 Simulating ECS deployment to LocalStack..."
-        echo "📋 In production, this would:"
+        echo "Simulating ECS deployment to LocalStack..."
+        echo "In production, this would:"
         echo "  • Update ECS task definition"
         echo "  • Deploy to ECS Fargate service"
         echo "  • Configure load balancer"
         echo "  • Set up auto-scaling"
         echo ""
-        echo "📊 Current simulation:"
+        echo "Current simulation:"
         echo "  • Cluster: $ECS_CLUSTER"
         echo "  • Service: $ECS_SERVICE"
         echo "  • Image: ${{ steps.build-image.outputs.image }}"
         echo "  • Region: $AWS_REGION"
         echo ""
-        echo "✅ Deployment simulation completed!"
+        echo "Deployment simulation completed!"
 
-    - name: 🧪 Run container locally for testing
+    - name: Run container locally for testing
       run: |
         echo "Starting Laravel container for testing..."
         docker run -d --name laravel-test -p 8080:80 \
           -e APP_ENV=production \
           -e APP_DEBUG=false \
           $ECR_REPOSITORY:latest
-
+        
         echo "Waiting for container to start..."
         sleep 10
-
+        
         echo "Testing container health..."
         if curl -f http://localhost:8080/health 2>/dev/null || curl -f http://localhost:8080 2>/dev/null; then
-          echo "✅ Container is healthy and responding!"
+          echo "Container is healthy and responding!"
         else
-          echo "⚠️ Container may need more time to start"
+          echo "Container may need more time to start"
           docker logs laravel-test
         fi
 
-    - name: 🎉 Deployment notification
+    - name: Deployment notification
       run: |
-        echo "🎉 CI/CD Pipeline completed successfully!"
-        echo "🌍 Environment: ${{ steps.detect-env.outputs.environment_name }}"
+        echo "CI/CD Pipeline completed successfully!"
+        echo "Environment: ${{ steps.detect-env.outputs.environment_name }}"
         echo ""
-        echo "📊 Summary:"
+        echo "Summary:"
         echo "  ✅ Tests passed"
         echo "  ✅ Docker image built"
         echo "  ✅ ECR repository created"
         echo "  ✅ ECS cluster created"
         echo "  ✅ Container tested"
         echo ""
-
+        
         if [[ "${{ steps.detect-env.outputs.deployment_mode }}" == "production" ]]; then
-          echo "🚀 PRODUCTION DEPLOYMENT COMPLETED!"
-          echo "🌐 Your Laravel application is now live on AWS!"
+          echo "PRODUCTION DEPLOYMENT COMPLETED!"
+          echo "Your Laravel application is now live on AWS!"
           echo ""
-          echo "� AWS Resources Created:"
+          echo "AWS Resources Created:"
           echo "  • ECS Fargate cluster: $ECS_CLUSTER"
           echo "  • ECS service: $ECS_SERVICE"
           echo "  • ECR repository: $ECR_REPOSITORY"
@@ -278,30 +268,30 @@ jobs:
           echo "  • RDS Database (if configured)"
           echo "  • ElastiCache Redis (if configured)"
           echo ""
-          echo "🔍 Next Steps:"
+          echo "Next Steps:"
           echo "  • Check AWS Console for service URLs"
           echo "  • Configure custom domain with Route 53"
           echo "  • Setup SSL certificate with ACM"
           echo "  • Monitor application in CloudWatch"
           echo ""
-          echo "📊 Useful Commands:"
+          echo "Useful Commands:"
           echo "  aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE"
           echo "  aws logs tail /ecs/laravel-app --follow"
         else
-          echo "🧪 LOCALSTACK DEMO COMPLETED!"
-          echo "🎯 This was a demonstration of the CI/CD pipeline"
+          echo "LOCALSTACK DEMO COMPLETED!"
+          echo "This was a demonstration of the CI/CD pipeline"
           echo ""
-          echo "🚀 To deploy to AWS Production:"
+          echo "To deploy to AWS Production:"
           echo "  1. Add AWS credentials to GitHub Secrets:"
           echo "     • AWS_ACCESS_KEY_ID"
           echo "     • AWS_SECRET_ACCESS_KEY"
           echo "  2. Push any commit to trigger production deployment"
           echo "  3. Monitor deployment in Actions tab"
           echo ""
-          echo "🌐 Demo URLs:"
+          echo "Demo URLs:"
           echo "  • Local test: http://localhost:8080"
           echo "  • LocalStack: http://localhost:4566"
           echo ""
-          echo "💡 The same workflow will automatically deploy to AWS"
-          echo "   when real credentials are provided!"
+          echo "The same workflow will automatically deploy to AWS"
+          echo "when real credentials are provided!"
         fi
